@@ -1,0 +1,695 @@
+<?php
+// vim:fenc=utf-8:ft=php:ai:si:ts=2:sw=2:et:nu:fdm=indent:fdn=1:
+
+/**
+ * @file
+ * Smilodon CardDAV Field Storage backend.
+ * (c) 2015 Daniel Zauner
+ */
+
+// Fetch the toys
+module_load_include('inc', 'smilodon_card', 'smilodon_card.sabre');
+
+/**
+ * Implements hook_permission().
+ */
+function smilodon_card_permission() {
+  $permissions = array(
+    'administer smilodon_card' => array(
+      'title' => t('Administer Smilodon CardDAV'),
+    ),
+  ); 
+
+  foreach (smilodon_card_addressbook_load_multiple(FALSE) as $abook) {
+    $permissions['access smilodon_card ' . $abook->mach_name] = array(
+      'title' => t('Access addressbook %abook', array('%abook' => $abook->name)),
+      'description' => check_plain($abook->description),
+    );
+  }
+
+  // TODO: Generate "May access addressbook" perm per addressbook (based on entity-types?)
+ return $permissions;
+}
+
+/**
+ * Implements hook_menu().
+ */
+function smilodon_card_menu() {
+  return array(
+    // BEGIN Admin Interfaces
+    'admin/config/system/smilodon_card' => array(
+      'title' => 'Smilodon CardDAV',
+      'description' => 'Configure the Smilodon CardDAV backend.',
+      'page callback' => array('smilodon_card_admin'),
+      'access arguments' => array('administer smilodon_card'),
+      'file' => 'smilodon_card.admin.inc',
+    ),
+    'admin/config/system/smilodon_card/add' => array(
+      'title' => 'New addressbook',
+      'description' => 'Add new addressbook',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('smilodon_card_admin_edit', entity_get_controller('smilodon_card_addressbook')->create()),
+      'access arguments' => array('administer smilodon_card'),
+      'file' => 'smilodon_card.admin.inc',
+      'type' => MENU_LOCAL_ACTION,
+    ),
+    'admin/config/system/smilodon_card/rebuild' => array(
+      'title' => 'Rebuild addressbooks',
+      'description' => 'Manually trigger addressbooks to be rebuilt',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('smilodon_card_admin_rebuild'),
+      'access arguments' => array('administer smilodon_card'),
+      'file' => 'smilodon_card.admin.inc',
+      'type' => MENU_LOCAL_ACTION,
+      'weight' => 99,
+    ),
+    'admin/config/system/smilodon_card/%smilodon_card_addressbook' => array(
+      'title callback' => '_smilodon_card_addressbook_name',
+      'title arguments' => array(4),
+      'description' => 'Configure the Smilodon CardDAV backend.',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('smilodon_card_admin_edit', 4),
+      'access arguments' => array('administer smilodon_card'),
+      'file' => 'smilodon_card.admin.inc',
+    ),
+    'admin/config/system/smilodon_card/%smilodon_card_addressbook/mappings' => array(
+      'title callback' => '_smilodon_card_addressbook_name',
+      'title arguments' => array(4),
+      'description' => 'Configure the Smilodon CardDAV backend.',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('smilodon_card_admin_edit_mappings', 4),
+      'access arguments' => array('administer smilodon_card'),
+      'file' => 'smilodon_card.admin.inc',
+    ),
+    'admin/config/system/smilodon_card/%smilodon_card_addressbook/delete' => array(
+      'title callback' => '_smilodon_card_addressbook_name',
+      'title arguments' => array(4),
+      'description' => 'Configure the Smilodon CardDAV backend.',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('smilodon_card_admin_delete', 4),
+      'access arguments' => array('administer smilodon_card'),
+      'file' => 'smilodon_card.admin.inc',
+    ),
+    'admin/config/system/smilodon_card/%smilodon_card_addressbook/rebuild' => array(
+      'title' => 'Rebuild Addressbooks',
+      'access arguments' => array('administer smilodon_card'),
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('smilodon_card_admin_rebuild', 4),
+      'file' => 'smilodon_card.admin.inc',
+    ),
+    // END Admin Interfaces
+    // BEGIN Ops
+    // End Ops
+  );
+}
+
+/**
+ * Title callback for hook_menu().
+ */
+function _smilodon_card_addressbook_name($abook) {
+  return $abook->name;
+}
+
+/**
+ * Implements hook_entity_info()
+ */
+function smilodon_card_entity_info() {
+  return array(
+    'smilodon_card_vcard' => array(
+      'label' => t('Smilodon vCard'),
+      'plural label' => t('Smilodon vCards'),
+      'controller class' => 'SmilodonCardController',
+      'base table' => 'smilodon_card_vcards',
+      'uri callback' => 'smilodon_card_vcard_uri',
+      'fieldable' => FALSE,
+      'uuid' => TRUE,
+      'load hook' => 'smilodon_card_vcard_load',
+      #      'label callback' => @todo,
+      'entity keys' => array(
+        'id' => 'cid',
+        'label callback' => 'smilodon_card_vcard_label',
+        'uuid' => 'uuid',
+      ),
+      /**
+       * @todo Let's see if/how we need this:
+     'view modes' => array(
+       'dav' => array(
+         'label' => 'CardDAV export',
+         'custom settings' => FALSE,
+       ),
+     ),
+     **/
+    ),
+    'smilodon_card_addressbook' => array(
+      'label' => t('Smilodon Card Addressbook'),
+      'plural label' => t('Smilodon Addressbooks'),
+      'controller class' => 'SmilodonCardAddressbookController',
+      'base table' => 'smilodon_card_addressbooks',
+      'uri callback' => 'smilodon_card_addressbook_uri',
+      'fieldable' => FALSE,
+      'uuid' => FALSE,
+      'load hook' => 'smilodon_card_addressbook_load',
+      #      'label callback' => @todo,
+      'entity keys' => array(
+        'id' => 'aid',
+        'label callback' => 'smilodon_card_addressbook_label',
+      ),
+      /**
+       * @todo Let's see if/how we need this:
+     'view modes' => array(
+       'dav' => array(
+         'label' => 'CardDAV export',
+         'custom settings' => FALSE,
+       ),
+     ),
+     **/
+    ),
+  );
+}
+
+/**
+ * Implements hook_libraries_info().
+ * Tell the libraries module to load SabreDAV.
+ * Since git-clones need to be processed by composer which generates autoload.php, we don't need any variants.
+ *
+ */
+function smilodon_card_libraries_info() {
+  return array(
+    'sabredav' => array(
+      'name' => 'SabreDAV',
+      'vendor url' => 'http://sabre.io',
+      'download url' => 'http://github.com/fruux/sabre-dav/releases',
+      'path' => 'vendor',
+      'version arguments' => array(
+        'file' => 'vendor/sabre/dav/lib/DAV/Version.php',
+        'pattern' => '@const VERSION = \'([0-9a-zA-Z\.-]+)\'@',
+        'lines' => 17,
+      ),
+      'files' => array(
+        'php' => array('autoload.php'),
+      ),
+    ),
+  );
+}
+
+// Addressbook entity functions
+/**
+ * Load a single addressbook.
+ *
+ * @param $aid
+ *  The addressbook ID.
+ *
+ * @param $reset
+ *  Whether to reset the smilodon_card_addressbook_load_multiple cache.
+ *
+ * @return
+ *  A fully-populated addressbook entity, or FALSE if the addressbook is not found.
+ *
+ * @todo Remove $conditions for D8.
+ */
+function smilodon_card_addressbook_load($aid = NULL, $reset = FALSE) {
+  $aids = isset($aid) ? array($aid) : array();
+  $abook = smilodon_card_addressbook_load_multiple($aids, array(), $reset);
+  return $abook ? reset($abook) : FALSE;
+}
+
+/**
+ * Load multiple addressbooks.
+ *
+ * @param $aids
+ *  An array of addressbook IDs.
+ *
+ * @param $conditions
+ *  Not used.
+ *
+ * @param $reset
+ *  Whether to reset the internal cache.
+ *
+ * @return
+ *  An array of addressbooks indexed by aid.
+ *
+ * @todo Remove $conditions for D8.
+ */
+function smilodon_card_addressbook_load_multiple($aids = array(), $conditions = array(), $reset = FALSE) {
+  return entity_load('smilodon_card_addressbook', $aids, $conditions, $reset);
+}
+
+/** 
+ * Load an addressbook by entity/bundle.
+ *
+ * @param $entity
+ *  The name of the entity we're dealing with.
+ *
+ * @param $bundle
+ *  The entity's bundle.
+ *
+ * @return
+ *  An array of addressbook entities or FALSE.
+ *
+ * @see smilodon_card_addressbook_load_multiple.
+ */
+function smilodon_card_addressbook_load_by_props($entity, $bundle) {
+  $efq = new EntityFieldQuery();
+  $efq->entityCondition('entity_type', 'smilodon_card_addressbook')
+    ->propertyCondition('entity', $entity)
+    ->propertyCondition('bundle', $bundle);
+  $efq = $efq->execute();
+
+  if (isset($efq['smilodon_card_addressbook'])) {
+    $aids = array_keys($efq['smilodon_card_addressbook']);
+    return entity_load('smilodon_card_addressbook', $aids);
+  }
+  else
+    return FALSE;
+}
+
+/**
+ * Save an addressbook.
+ *
+ * @param $addressbook
+ *  The addressbook entity to be saved.
+ *
+ * @see SmilodonCardAddressbookController::save()
+ */
+function smilodon_card_addressbook_save($addressbook) {
+  return entity_get_controller('smilodon_card_addressbook')->save($addressbook);
+}
+
+/**
+ * Delete an addressbook.
+ *
+ * @param $aid
+ *  An addressbook ID.
+ */
+function smilodon_card_addressbook_delete($aid) {
+  entity_get_controller('smilodon_card_addressbook')->delete($aid);
+}
+
+/**
+ * Delete multiple addressbooks.
+ *
+ * @param $aids
+ *  An array of addressbook IDs.
+ */
+function smilodon_card_addressbook_delete_multiple($aids) {
+  entity_get_controller('smilodon_card_addressbook')->deleteMultiple($aids);
+}
+
+// vCard entity functions
+/**
+ * Load a single vCard.
+ *
+ * @param $cid
+ *  The vCard ID.
+ *
+ * @param $reset
+ *  Whether to reset the smilodon_card_addressbook_load_multiple cache.
+ *
+ * @return
+ *  A fully-populated vCard entity, or FALSE if the vCard is not found.
+ *
+ * @todo Remove $conditions for D8.
+ */
+function smilodon_card_vcard_load($cid = NULL, $reset = FALSE) {
+  $cids = isset($cid) ? array($cid) : array();
+  $card = smilodon_card_vcard_load_multiple($cids, array(), $reset);
+  return $card ? reset($card) : FALSE;
+}
+
+/**
+ * Load multiple vCards.
+ *
+ * @param $cids
+ *  An array of vCard IDs.
+ *
+ * @param $conditions
+ *  Not used.
+ *
+ * @param $reset
+ *  Whether to reset the internal cache.
+ *
+ * @return
+ *  An array of vCards indexed by cid.
+ *
+ * @todo Remove $conditions for D8.
+ */
+function smilodon_card_vcard_load_multiple($cids = array(), $conditions = array(), $reset = FALSE) {
+  return entity_load('smilodon_card_vcard', $cids, $conditions, $reset);
+}
+
+/** 
+ * Load a vCard its entity ID.
+ *
+ * @param $abook
+ *  The addressbook the vCard belongs to.
+ *
+ * @param $ent_id
+ *  The original entity's ID.
+ *
+ * @param $ent_vid
+ *  The entity's version ID. Set to NULL to load the latest one.
+ *
+ * @return
+ *  A vCard entity or FALSE.
+ *
+ * @see smilodon_card_vcard_load_multiple.
+ */
+function smilodon_card_vcard_load_by_ent_id($abook, $ent_id, $ent_vid = NULL) {
+  $efq = new EntityFieldQuery();
+  $efq->entityCondition('entity_type', 'smilodon_card_vcard')
+    ->propertyCondition('aid', $abook->aid)
+    ->propertyCondition('ent_id', $ent_id);
+  if ($ent_vid)
+    $efq->propertyCondition('ent_vid' , $ent_vid);
+  $efq = $efq->execute();
+
+  if (isset($efq['smilodon_card_vcard'])) {
+    $cids = array_keys($efq['smilodon_card_vcard']);
+    return smilodon_card_vcard_load(reset($cids));
+  }
+  else
+    return FALSE;
+}
+
+/**
+ * Save a vCard.
+ *
+ * @param $vcard
+ *  The vCard entity to be saved.
+ *
+ * @see SmilodonCardVCardController::save()
+ */
+function smilodon_card_vcard_save($vcard) {
+  return entity_get_controller('smilodon_card_vcard')->save($vcard);
+}
+
+/**
+ * Delete a vCard.
+ *
+ * @param $cid
+ *  An vCard ID.
+ */
+function smilodon_card_vcard_delete($cid) {
+  entity_get_controller('smilodon_card_vcard')->delete($cid);
+}
+
+/**
+ * Delete multiple vCards.
+ *
+ * @param $cids
+ *  An array of vCard IDs.
+ */
+function smilodon_card_vcard_delete_multiple($cids) {
+  entity_get_controller('smilodon_card_addressbook')->deleteMultiple($cids);
+}
+
+/**
+ * Helper function to turn a field value into human readable content.
+ */
+function _smilodon_card_render_field_data(&$entity_type, &$entity, &$field) {
+  $info = field_info_field($field);
+  $raw = field_get_items($entity_type, $entity, $field);
+  $field_type = $info['type'];
+  $rendered_values = array();
+
+  foreach ($raw as $data) {
+    switch ($field_type) {
+    case 'taxonomy_term_reference':
+      $rendered_values[] = filter_xss(taxonomy_term_load($data['tid'])->name, array());
+      break;
+    case 'datestamp':
+      $rendered_values[] = date("Y-m-d", reset($data));
+      break;
+    default:
+      if (array_key_exists('value', $data))
+        $rendered_values[] = $data['value'];
+      else if (is_array($data))
+        $rendered_values[] = implode(', ', $data);
+      else
+      $rendered_values[] = $data;
+    }
+  }
+  return $rendered_values;
+}
+
+/**
+ * Implements hook_field_attach_insert().
+ * @see smilodon_card_field_attach_update().
+ */
+function smilodon_card_field_attach_insert($entity_type, $entity) {
+  smilodon_card_field_attach_update($entity_type, $entity);
+}
+
+/**
+ * Implements hook_field_attach_update().
+ * Grabs all the relevant data and parses it into a vCard, if a matching addressbook is defined.
+ */
+function smilodon_card_field_attach_update($entity_type, $entity) {
+  list($ent_id, $ent_vid, $bundle) = entity_extract_ids($entity_type, $entity);
+  $abooks = smilodon_card_addressbook_load_by_props($entity_type, $bundle);
+
+  // No addressbooks => No work for us.
+  if (empty($abooks))
+    return;
+
+  foreach ($abooks as $abook) {
+    $original_card = smilodon_card_vcard_load_by_ent_id($abook, $ent_id, $ent_vid);
+
+    // VObject is not as cooperative as I hoped it to be; for now,
+    // we have to recreate the vCard from scratch to avoid duplicates.
+    $card = entity_get_controller('smilodon_card_vcard')->create();
+    $card->aid = $abook->aid;
+    $card->ent_id = $ent_id;
+    $card->ent_vid = $ent_vid;
+    if ($original_card) {
+      $card->cid = $original_card->cid;
+      $card->lastmod = $original_card->lastmod;
+      $card->uuid = $original_card->uuid;
+      $card->original = $original_card;
+    }
+    _smilodon_card_parse_entity($abook, $card, $entity_type, $entity);
+#    dpm($card->data->serialize(), __function__);
+    smilodon_card_vcard_save($card);
+
+  }
+
+  return;
+}
+
+/**
+ * Implements hook_field_delete_instance()
+ */
+function smilodon_card_field_delete_instance($instance) {
+  dpm($instance, __function__);
+  $abooks = smilodon_card_addressbook_load_by_props($instance['entity_type'], $instance['bundle']);
+  foreach ($abooks as $abook)  {
+    array_walk_recursive($abook, '_smilodon_card_addressbook_delete_field', $instance['field_name']);
+    dpm($abook, $abook->name);
+    smilodon_card_addressbook_save($abook);
+  }
+
+}
+
+function _smilodon_card_addressbook_delete_field(&$item, &$key, $field_name) {
+  if ($key === 'field' && $item === $field_name) {
+    error_log("unsetting $key => $item");
+    $item = NULL;
+    unset($key);
+  }
+}
+
+function _smilodon_card_parse_entity($abook, &$card, $entity_type, $entity) {
+  // Attach the picture. Android L messes up the preceeding field for some reason...
+  if (property_exists($entity, 'picture') && $entity->picture && !isset($vcard_input['PHOTO'])) {
+    _smilodon_card_vcard_append($card, array('PHOTO' => file_get_contents(drupal_realpath($entity->picture->uri))), array('ENCODING' => 'b', 'type' => $entity->picture->filemime));
+#   // SabreDAV 3.0 doesn't support this yet:    
+#    smilodon_card_vcard_append($card, array('PHOTO' => ''), array('VALUE' => 'uri:'.file_create_url($entity->picture->uri)));
+  }
+  
+  // Loop through the supported vCard fields and insert the corresponding data (if present).
+  $vcard_mapped = array_merge_recursive(_smilodon_card_vcard_fields(), $abook->mappings);
+  $vcard_input = array();
+
+  foreach ($vcard_mapped as $group => $vcard_fields) {
+    foreach ($vcard_fields as $vcard_field => $vcard_value) {
+      $container = array();
+      $sub_fields = array();
+      $type = NULL;
+      $has_data = FALSE;
+
+      if ($vcard_field == 'HOME' || $vcard_field == 'WORK' || $vcard_field == 'OTHER' || $vcard_field == 'CELL') {
+        $type = $vcard_field;
+        $vcard_field = $group;
+      }
+
+      switch ($vcard_field) {
+      case 'N':
+        $sub_fields = array('FAMILY', 'GIVEN', 'MIDDLE', 'TITLE', 'SUFFIX');
+        break;
+      case 'ADR':
+        $sub_fields = array(NULL, 'EXT', 'STREET', 'CITY', 'REGION', 'CODE', 'COUNTRY');
+        break;
+      }
+
+      // Shift the arrays to accommodate for normal fields.
+      if (empty($sub_fields) && is_array($vcard_value)) {
+        $sub_fields = array($vcard_field);
+        $vcard_value = array($vcard_field => $vcard_value);
+      }
+
+      foreach ($sub_fields as $name_field) {
+        if (isset($vcard_value[$name_field]['field'])) {
+          $card_data = _smilodon_card_render_field_data($entity_type, $entity, $vcard_value[$name_field]['field']);
+          $container[] = implode(', ', $card_data);
+          $has_data |= !empty($card_data);
+        }
+        else if (isset($vcard_value[$name_field]['token'])) {
+          $token_data = token_replace($vcard_value[$name_field]['token'], array($entity_type => $entity), array('callback' => '_smilodon_card_process_token', 'clear' => TRUE));
+          $container[] = $token_data;
+          $has_data |= !empty($token_data);
+        }
+        else $container[] = '';
+      }
+
+      // We have to append groups with multiple variants (home-address, work-address etc.)
+      // right away. Not sexy, but hey...
+      if ($type && $has_data) {
+        _smilodon_card_vcard_append($card, array($vcard_field => $container), array('type' => $type));
+      }
+      else if (!$type && !empty($container))
+        $vcard_input[$vcard_field] = $container;
+    }
+  }
+
+  // This one should always be here...
+#  $vcard_input['uuid'] = $entity->uuid;
+
+  // Sanity check: Since vCard 3.0 requires a FN field, we have to throw one together if it wasn't set.
+  if (!isset($vcard_input['FN']) && isset($vcard_input['N'])) 
+    $vcard_input['FN'] = implode(' ', 
+      array(
+        $vcard_input['N'][1],
+        $vcard_input['N'][0]));
+
+
+  _smilodon_card_vcard_append($card, $vcard_input);
+  return $card;
+}
+
+/**
+ * Helper function to concat multiple tokens.
+ * TODO: Define a dedicated "separator" field per token.
+function _smilodon_card_process_token(&$replacements, $data, $options) {
+  $replacements = str_replace(',', '', $replacements);
+}
+
+/**
+ * Helper function that holds all supported vCard fields.
+ *
+ * @return
+ *  All names as associated array.
+ */
+function _smilodon_card_vcard_fields() {
+  return array(
+    'basic' => array(
+      'N' => array(
+        'TITLE' => t('Title'),
+        'GIVEN' => t('Given Name'),
+        'MIDDLE' => t('Additional Name'),
+        'FAMILY' => t('Family Name'),
+        'SUFFIX' => t('Honorific Suffix'),
+      ),
+      'FN' => t('Display Name'),
+      'NICKNAME' => t('Nickname'),
+      'ORG' => t('Organisation'),
+      'TITLE' => t('Position'),
+      'URL' => t('Homepage'),
+      'BDAY' => t('Birthday'),
+      'GENDER' => t('Gender'),
+      'SORT-STRING' => t('Sort by'),
+    ),
+    'TEL' => array(
+      'HOME' => t('Private'),
+      'WORK' => t('Work'),
+      'CELL' => t('Mobile'),
+      'OTHER' => t('Other'),
+    ),
+    'EMAIL' => array(
+      'HOME' => t('Private'),
+      'WORK' => t('Work'),
+      'OTHER' => t('Other'),
+    ),
+    'ADR' => array(
+      'HOME' => array(
+        'STREET' => t('Street'),
+        'EXT' => t('Extended Address'),
+        'CITY' => t('City'),
+        'REGION' => t('Region'),
+        'CODE' => t('Postcode'),
+        'COUNTRY' => t('Country'),
+      ),
+      'WORK' => array(
+        'STREET' => t('Street'),
+        'EXT' => t('Extended Address'),
+        'CITY' => t('City'),
+        'REGION' => t('Region'),
+        'CODE' => t('Postcode'),
+        'COUNTRY' => t('Country'),
+      ),
+      'OTHER' => array(
+        'STREET' => t('Street'),
+        'EXT' => t('Extended Address'),
+        'CITY' => t('City'),
+        'REGION' => t('Region'),
+        'CODE' => t('Postcode'),
+        'COUNTRY' => t('Country'),
+      ),
+    ),
+    'NOTES' => array(
+      'NOTES' => t('Notes'),
+    ),
+  );
+}
+
+/**
+ * Helper function to append data to existing vCard objects.
+ */
+function _smilodon_card_vcard_append(&$card, $data, $attributes = array()) {
+  foreach ($data as $index => $content) {
+      $card->data->add($index, $content, $attributes);
+  }
+}
+
+/**
+ * Helper function for batch-rebuild ops.
+ */
+function _smilodon_card_rebuild_card($abook, $entity, &$context) {
+  list($ent_id, $ent_vid, $bundle) = entity_extract_ids($abook->entity, $entity);
+
+  $original_card = smilodon_card_vcard_load_by_ent_id($abook, $ent_id, $ent_vid);
+
+  // VObject is not as cooperative as I hoped it to be; for now,
+  // we have to recreate the vCard from scratch to avoid duplicates.
+  $card = entity_get_controller('smilodon_card_vcard')->create();
+  $card->aid = $abook->aid;
+  $card->ent_id = $ent_id;
+  $card->ent_vid = $ent_vid;
+  if ($original_card) {
+    $card->cid = $original_card->cid;
+    $card->lastmod = $original_card->lastmod;
+    $card->uuid = $original_card->uuid;
+    $card->original = $original_card;
+  }
+  _smilodon_card_parse_entity($abook, $card, $abook->entity, $entity);
+  smilodon_card_vcard_save($card);
+}
+
+function smilodon_card_rebuild_finished($success, $results, $operations) {
+  if ($success) {
+    $message = format_plural(count($results), 'Processed one vCard.', 'Processed @count results');
+  }
+  else 
+    $message = t('Finished with an error.');
+
+  drupal_set_message($message, $success ? 'status' : 'error');
+}

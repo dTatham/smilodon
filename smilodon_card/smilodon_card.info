@@ -1,0 +1,14 @@
+name = Smilodon CardDAV
+description = CardDAV and vCard integration for addressfields.
+core = 7.x
+package = fratler_suite
+
+dependencies[] = libraries
+dependencies[] = uuid
+
+configure = admin/config/system/smilodon_card
+
+files[] = smilodon_card.admin.inc
+files[] = smilodon_card.sabre.inc
+files[] = smilodon_card.controller.inc
+

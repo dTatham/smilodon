@@ -1,0 +1,234 @@
+<?php
+/* vim: set filetype=php expandtab tabstop=2 shiftwidth=2 autoindent smartindent nu */
+
+function smilodon_card_schema() {
+  $uuid_field = array();
+  $uuid_index = array();
+  if (function_exists('uuid_schema_field_definition')) {
+    $uuid_field = uuid_schema_field_definition();
+    $uuid_index = array('uuid');
+  }
+
+  return array(
+    // BEGIN smilodon_cards
+      'smilodon_card_vcards' => array(
+      'fields' => array(
+        'cid'  => array(
+          'type'    => 'serial',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'description'  => 'ID of the vcard on the drupal side.',
+          ),
+        'aid' => array(
+          'type'    => 'int',
+          'not null'  => TRUE,
+          'description'  => 'Reference to the entity that this vcard is based on.',
+          ),
+        'ent_id' => array(
+          'type' => 'int',
+          'not null' => TRUE,
+          'description' => 'The entity\'s ID.',
+        ),
+        'ent_vid' => array(
+          'type' => 'int',
+          'not null' => FALSE,
+          'description' => 'The entity\'s revision ID.',
+        ),
+        'data' => array(
+          'type' => 'blob',
+          'size' => 'big',
+          'description' => 'A blob holding the vcard.',
+          'mysql_type' => 'MEDIUMBLOB',
+        ),
+        // @todo can we generate this via hook_uri?!
+        'uri' => array(
+          'type'    => 'varchar',
+          'length'    => 200,
+          'binary' => TRUE,
+          'description' => 'A URI of the rendered vcard.',
+        ),
+        'lastmod' => array(
+          'type'    => 'int',
+          'unsigned' => TRUE,
+          'description'  => 'Timestamp of the last modification.',
+        ),
+        'etag' => array(
+          'type'    => 'varchar',
+          'length'  => 32,
+          'description'  => 'The vcard\'s etag, required for DAV functions.',
+          'binary' => TRUE,
+        ),
+        'size' => array(
+          'type'    => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'description'  => 'The size in bytes of the vcard.',
+          ),
+        'uuid' => $uuid_field,
+        ),
+      'primary key'  => array('cid'),
+      'indexes' => array('uuid' => $uuid_index),
+      'description'  => 'Holds all vcard data.',
+    ),
+    // END smilodon_cards
+    // BEGIN smilodon_addressbooks
+    'smilodon_card_addressbooks' => array(
+      'fields' => array(
+        'aid' => array(
+          'type' => 'serial',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'description' => 'ID of the addressbook on the drupal side.',
+        ),
+        'name' => array(
+          'type' => 'varchar',
+          'length' => 128,
+          'description' => 'The name of the addressbook.',
+        ),
+        'mach_name' => array(
+          'type' => 'varchar',
+          'length' => 128,
+          'binary' => TRUE,
+          'description' => 'The machine name of the addressbook.',
+        ),
+        'description' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'description' => 'The description of the addressbook.',
+        ),
+        'uri' => array(
+          'type' => 'varchar',
+          'length' => 200,
+          'binary' => TRUE,
+          'description' => 'A URI of the addressbook.', // TODO: Does this apply in our context?
+        ),
+        'synctoken' => array(
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'description' => 'DAV-stuff',
+        ),
+        'entity' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'binary' => TRUE,
+          'description' => 'The entity the addressbook is based on',
+        ),
+        'bundle' => array(
+          'type' => 'varchar',
+          'length' => 255,
+          'binary' => TRUE,
+          'description' => 'The entity\'s bundle',
+        ),
+        'mappings' => array(
+          'type' => 'blob',
+          'description' => 'An array holding all the relevant mappings for this addressbook',
+        ),
+      ),
+      'primary key' => array('aid'),
+      'description' => 'Bunker for addressbooks.',
+    ),
+    // END smilodon_card_addressbooks
+    // BEGIN smilodon_card_addressbookchanges
+    'smilodon_card_addressbookchanges' => array(
+      'fields' => array(
+        'acid' => array(
+          'type' => 'serial',
+          'description' => 'Self explanatory, isn\'t it?!',
+        ),
+        'uri' => array(
+          'type' => 'varchar',
+          'length' => 200,
+          'binary' => TRUE,
+          'description' => 'A URI of the rendered vcard.',
+        ),
+        'synctoken' => array(
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'description' => 'DAV-stuff',
+        ),
+        'addressbookid' => array(
+          'type'    => 'int',
+          'unsigned' => TRUE,
+          'not null'  => TRUE,
+          'description'  => 'Reference to the addressbook the vcard is attached to.',
+          ),
+        'operation' => array(
+          'type'    => 'int',
+          'size' => 'tiny',
+          'not null'  => TRUE,
+          'description'  => 'What op has been carried out on the change.',
+          ),
+        ),
+        'primary key' => array('acid'),
+        'description' => 'Tracks the changes on the addressbooks.',
+        'indexes' => array(
+          'addressbookid_synctoken'  => array('addressbookid', 'synctoken'),
+          ),
+    ),
+    // END smilodon_addressbookchanges
+  );
+}
+
+/**
+ * Implements hook_requirements()
+ * We need to make sure private storage is set up (safety first 'n stuff).
+ */
+function smilodon_card_requirements($phase) {
+  if ($phase === 'update')
+    return;
+
+  $t = get_t();
+
+  if (empty(variable_get('file_private_path'))) {
+
+#    // If - for some reason - we should lose the private folder, disable this module.
+#    // It might not be the politest way, but definitely the safest.
+#    if ($phase === 'runtime') 
+#      module_disable(array('smilodon_card'));
+#    if ($phase === 'runtime')
+#      watchdog('smilodon_card', $t('SmilodonCard could not find its private folder.'));
+
+    return array('smilodon_card_priv' => array(
+      'title' => $t('Private file system path required'),
+      'description' => $t('You need to set up the private folder. Head over to !fs and try again.',
+      array('!fs' => l($t('File system'), 'admin/config/media/file-system', array('query' => array('destination' => current_path())) ),)),
+      'value' => '',
+      'severity' => REQUIREMENT_ERROR,
+    ));
+  }
+  else if ($phase === 'runtime') {
+    $folder = variable_get('smilodon_card_folder');
+    file_prepare_directory($folder, FILE_MODIFY_PERMISSIONS | FILE_CREATE_DIRECTORY);
+    return array('smilodon_card_storage' => array(
+      'title' => $t('Smilodon CardDAV Storage'),
+      'value' => $folder,
+      'severity' => REQUIREMENT_OK,
+    ));
+  }
+}
+
+/**
+ * Implements hook_install()
+ */
+function smilodon_card_install() {
+  $folder = 'private://smilodon/cards';
+  if (!file_prepare_directory($folder, FILE_MODIFY_PERMISSIONS | FILE_CREATE_DIRECTORY)) {
+    watchdog('smilodon_card', 'The directory %folder does not exist and could not be created.', array('%folder' => drupal_realpath($folder)), WATCHDOG_ERROR);
+  }
+  else {
+    file_create_htaccess($folder, TRUE, TRUE);
+    variable_set('smilodon_card_folder', $folder);
+  }
+}
+
+function smilodon_card_enable() {
+  // Do stuff.
+# TODO generate vCards?
+}
+
+function smilodon_card_uninstall() {
+  file_unmanaged_delete_recursive(variable_get('smilodon_card_folder'));
+  variable_del('smilodon_card_folder');
+}
